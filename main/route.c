@@ -160,11 +160,26 @@ bool route_is_fit(const char *name)
     return l > 4 && strcasecmp(name + l - 4, ".fit") == 0;
 }
 
+/* Bounded "dir/name": the name comes from a directory listing, but -O2's
+ * -Wformat-truncation cannot see that, so copy explicitly. */
+static void path_join(char *path, size_t n, const char *dir, const char *name)
+{
+    size_t d = strlen(dir);
+    if (d + 1 >= n) { path[0] = 0; return; }
+    memcpy(path, dir, d);
+    path[d] = '/';
+    size_t room = n - d - 1;
+    size_t l = strlen(name);
+    if (l >= room) l = room - 1;
+    memcpy(path + d + 1, name, l);
+    path[d + 1 + l] = 0;
+}
+
 void route_path(const char *name, char *path, size_t n)
 {
-    if (strchr(name, '/')) snprintf(path, n, SD_MOUNT_POINT "/%s", name);
-    else if (route_is_fit(name)) snprintf(path, n, TRACKLOG_DIR "/%s", name);
-    else snprintf(path, n, ROUTE_DIR "/%s", name);
+    if (strchr(name, '/')) path_join(path, n, SD_MOUNT_POINT, name);
+    else if (route_is_fit(name)) path_join(path, n, TRACKLOG_DIR, name);
+    else path_join(path, n, ROUTE_DIR, name);
 }
 
 /* A recorded ride as a route: every record with a position is a point,

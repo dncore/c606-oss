@@ -14,3 +14,14 @@ bool ui_port_touch_state(int16_t *x, int16_t *y);
 /* Simulate a finger at (x, y) for hold_ms (developer console). */
 void ui_port_inject_touch(int16_t x, int16_t y, uint32_t hold_ms);
 void ui_port_inject_swipe(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint32_t ms);
+
+/* Timestamp an input that did not come through the touch controller (devcon
+ * key injection), so "perf" can report key-to-display latency. */
+void ui_port_mark_input(void);
+
+/* Repaint the whole active screen (used by the screenshot command). */
+void ui_port_full_refresh(void);
+
+/* Rendering / input latency counters (devcon "perf"). */
+void ui_port_perf_report(void);
+void ui_port_perf_reset(void);

@@ -3,7 +3,9 @@
  * can be driven and screenshotted from the host without touching the
  * device. See devcon.h for the commands.
  *
- * The screen copy costs one memcpy per flushed area into PSRAM.
+ * The screen copy into PSRAM is only maintained while a screenshot is being
+ * taken: mirroring every flushed area cost a memcpy per flush and slowed the
+ * UI down for a feature used from the developer console only.
  */
 #include <stdio.h>
 #include <string.h>
@@ -37,11 +39,12 @@
 static const char *TAG = "devcon";
 
 static uint16_t *s_frame;                 /* LCD_H_RES x LCD_V_RES RGB565, PSRAM */
+static volatile bool s_mirror;            /* only while cmd_shot() runs */
 static devcon_key_cb_t s_key_cb;
 
 void devcon_mirror(int x1, int y1, int x2, int y2, const void *px)
 {
-    if (!s_frame) return;
+    if (!s_frame || !s_mirror) return;
     const uint16_t *src = px;
     int w = x2 - x1;
     for (int y = y1; y < y2; y++, src += w) {
@@ -64,10 +67,25 @@ static void cmd_shot(void)
     static const char hex[] = "0123456789abcdef";
     static char line[LCD_H_RES * 4 + 3];
     char hdr[32];
+
+    /* Repaint everything once with mirroring enabled, then copy the frame so
+     * the USB transfer does not hold the UI lock. */
+    uint16_t *snap = heap_caps_malloc((size_t)LCD_H_RES * LCD_V_RES * 2, MALLOC_CAP_SPIRAM);
+    s_mirror = true;
+    ui_port_full_refresh();
+    vTaskDelay(pdMS_TO_TICKS(120));
+    if (snap) {
+        ui_lock();
+        memcpy(snap, s_frame, (size_t)LCD_H_RES * LCD_V_RES * 2);
+        ui_unlock();
+    }
+    s_mirror = false;
+    const uint16_t *frame = snap ? snap : s_frame;
+
     int n = snprintf(hdr, sizeof hdr, "SHOT %d %d\n", LCD_H_RES, LCD_V_RES);
     write_all(hdr, n);
     for (int y = 0; y < LCD_V_RES; y++) {
-        const uint8_t *row = (const uint8_t *)&s_frame[y * LCD_H_RES];
+        const uint8_t *row = (const uint8_t *)&frame[y * LCD_H_RES];
         char *p = line;
         *p++ = 'R';
         for (int i = 0; i < LCD_H_RES * 2; i++) {
@@ -78,6 +96,7 @@ static void cmd_shot(void)
         write_all(line, p - line);
     }
     write_all("SHOT_END\n", 9);
+    free(snap);
 }
 
 /* directory listing: one "name size" line per entry, then LS_END */
@@ -236,7 +255,10 @@ static void handle(char *cmd)
     if (!w) return;
     if (!strcmp(w, "key")) {
         char *a = strtok_r(NULL, " ", &save), *b = strtok_r(NULL, " ", &save);
-        if (a && b && s_key_cb) s_key_cb(atoi(a), atoi(b));
+        if (a && b && s_key_cb) {
+            ui_port_mark_input();
+            s_key_cb(atoi(a), atoi(b));
+        }
         printf("ok\n");
     } else if (!strcmp(w, "tap")) {
         char *a = strtok_r(NULL, " ", &save), *b = strtok_r(NULL, " ", &save);
@@ -344,6 +366,10 @@ static void handle(char *cmd)
         if (a && b && wr) cmd_sdbench_write(b, atoi(a));
         else if (a && b) cmd_sdbench(b, atoi(a));
         else printf("sdbench failed\n");
+    } else if (!strcmp(w, "perf")) {   /* perf [reset]: frame/input latency counters */
+        char *a = strtok_r(NULL, " ", &save);
+        if (a && !strcmp(a, "reset")) ui_port_perf_reset();
+        ui_port_perf_report();
     } else if (!strcmp(w, "heap")) {
         printf("heap int %u psram %u\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
