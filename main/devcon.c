@@ -26,6 +26,7 @@
 #include "board.h"
 #include "devcon.h"
 #include "ui_port.h"
+#include "usb_msc.h"
 #include "ride.h"
 #include "mapview.h"
 #include "gps.h"
@@ -366,6 +367,18 @@ static void handle(char *cmd)
         if (a && b && wr) cmd_sdbench_write(b, atoi(a));
         else if (a && b) cmd_sdbench(b, atoi(a));
         else printf("sdbench failed\n");
+    } else if (!strcmp(w, "usbmsc")) {   /* usbmsc [seconds]: expose eMMC, then reboot */
+        char *a = strtok_r(NULL, " ", &save);
+        int secs = a ? atoi(a) : 150;
+        if (secs < 10) secs = 10;
+        printf("ok msc %d\n", secs);
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        if (usb_msc_enter() == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS((TickType_t)secs * 1000));
+            usb_msc_leave_and_restart();   /* restores USB-Serial-JTAG and reboots */
+        }
+        printf("msc failed\n");
     } else if (!strcmp(w, "perf")) {   /* perf [reset]: frame/input latency counters */
         char *a = strtok_r(NULL, " ", &save);
         if (a && !strcmp(a, "reset")) ui_port_perf_reset();

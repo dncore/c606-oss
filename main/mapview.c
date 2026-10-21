@@ -655,7 +655,10 @@ again:
 static void refresh_cb(lv_timer_t *t)
 {
     if (!s_visible || !s_task || s_busy) return;
-    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    /* Never block the LVGL task on the map lock: render_task holds it for the
+     * whole tile render (~100 ms), which used to show up as a huge frame time
+     * when the map page was opened. Skipping one tick is harmless. */
+    if (xSemaphoreTake(s_mtx, 0) != pdTRUE) return;
     bool need = s_have_pos && (!s_shown || s_shown_zoom != s_zoom || s_shown_dark != (theme_current() == THEME_DARK)
                                || s_shown_layers != config_get()->map_layers || s_shown_route != route_generation());
     if (s_have_pos && !need) {

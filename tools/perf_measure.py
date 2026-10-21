@@ -19,10 +19,11 @@ import serial
 def open_port(path):
     s = serial.serial_for_url(path, baudrate=115200, timeout=0.3, do_not_open=True)
     try:
-        # deassert both before opening: this board otherwise latches the
-        # USB-Serial-JTAG ROM loader (device stops running the app)
-        s.dtr = False
-        s.rts = False
+        # Assert both before opening. Deasserting them resets this board
+        # (measured: uptime drops to ~200 ms), which silently turned every
+        # measurement into a cold-boot measurement.
+        s.dtr = True
+        s.rts = True
     except Exception:
         pass
     s.open()
