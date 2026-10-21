@@ -224,7 +224,10 @@ void devcon_mirror(...)
 
 骑行态按键翻数据页（不含地图）：**17.2 / 28.3 ms**，`render_max` 43 ms。
 
-结论：端到端延迟降到基线的 **1/2.7 左右**，峰值从 108 ms 降到 33 ms。
+装上真实地图（山东 v5）后热态重测：**30.5–31.2 / 34.6–43.5 ms**，
+`render_max` 84–87 ms——地图页把平均值抬高了，见第 9 节。
+
+结论：端到端延迟降到基线的 **1/2.7 左右**，峰值从 108 ms 降到 33 ms（不含地图）。
 剩下的约 17–20 ms 基本就是 8 ms 采样 + 12 ms 手势判定 + 9 ms 渲染。
 
 ## 7. 踩过的坑
@@ -232,9 +235,11 @@ void devcon_mirror(...)
 1. **`sdkconfig.defaults` 改了不生效。** 非 `c606` 板型用的是仓库根目录的
    `sdkconfig.cc700pro`（不是 `build-*/sdkconfig`）。**改 defaults 后必须删掉它重新生成**，
    否则会以为改了、其实编的是旧配置。我因此白测了一轮。
-2. **打开串口会把设备留在 ROM 下载模式。** 表现是"设备不见了 / 没有日志"，
-   但 esptool 用 `--before no-reset` 能连上——这不是刷坏。`perf_measure.py`
-   现在在 `open()` 前把 DTR/RTS 都置低。
+2. **DTR/RTS 置低会复位设备。** 实测：`dtr=False, rts=False` 打开串口后
+   uptime 只有 ~200 ms，也就是说**每一次"热态"测量其实都是冷启动测量**；
+   `dtr=True, rts=True` 打开则 uptime 连续（39 s → 43 s）。
+   `perf_measure.py` 已改为置高。设备若已被留在 ROM 下载模式，用
+   `esptool --before no-reset` 仍能连上，不是刷坏。
 3. **`-O2` 触发 `-Werror=format-truncation`**（见 5.5）。
 4. **`frames` 容易误读成帧率**（见 1）。
 5. **地图页会污染最大值。** 12 次滑动里只要经过地图页，`render_max` 就是 170 ms+；
@@ -259,17 +264,34 @@ sudo ../.venv/bin/python tools/perf_measure.py "$P" --mode key   --swipes 12   #
 
 回滚：`flash_c606.py --restore --confirm`（整片 16 MB 原厂备份）。
 
-## 9. 未解决：地图页首帧 ~177 ms
+## 9. 地图页尖峰：已定位并修复
 
-- 数据页 `render_max` 43 ms，地图页 177 ms（基线也有 191 ms，不是新引入的）。
-- 已排除：地图文件扫描（`mapview_init()` 在 boot 时完成）。
-- 待验证假设：
-  1. canvas 首次 invalidate 时 LVGL 走的是逐像素 blend，而不是 memcpy 快路径；
-  2. 地图页标签的字体首次栅格化；
-  3. 地图渲染任务与 LVGL 任务在 `ui_lock` 上争用（`memcpy(s_front, s_back, w*h*2)`
-     约 115 KB，在锁内）。
-- 候选修法：进页前在后台预渲染一帧；把 canvas 首次 invalidate 拆成横条；
-  把 `s_front/s_back` 的拷贝移出 `ui_lock`（双缓冲交换指针）。
+现象：一进入地图页，`render_max` 就出现 177–230 ms，基线也有 191 ms。
+
+根因不是渲染，而是**锁**：
+
+- `mapview.c` 的 `render_task` 在**整段瓦片渲染期间**持有 `s_mtx`；
+  实测一次山东省图 z12 全屏渲染 **235 ms**（地图页标题里的 `235 ms`）。
+- `refresh_cb()` 是 LVGL 定时器，用 `portMAX_DELAY` 拿同一把 `s_mtx` →
+  LVGL 任务在 `lv_timer_handler()` 里被阻塞同样的时长，正好对上 177–230 ms。
+
+修复：`refresh_cb` 改成 `xSemaphoreTake(s_mtx, 0)`，拿不到就跳过这一 tick。
+
+验证（地图在滑动环里，连续改 4 次中心触发重绘）：
+
+```
+修复前 render_max 177–230 ms
+修复后 render_max  31 ms（重绘期间）
+修复后 进地图页    84–87 ms（canvas 首帧）
+```
+
+仍未完全消除的是 84–87 ms 的 canvas 首帧：地图页画布约 240×280 RGB565，
+LVGL 需要把整块 blit 到绘制缓冲。下一步可以试：预渲染一帧再切换、
+把 canvas 拆成横条 invalidate、或确认 LVGL 的 RGB565 图像是否走了 memcpy 快路径。
+
+另外一个独立的性能事实：**地图渲染本身 235 ms/帧（约 4 fps）**，
+所以地图页的平移/缩放仍然是"每秒几帧"的体验；这不是 UI 卡顿（数据页不受影响），
+要提升得优化 `render_map()` 的 way 裁剪或瓦片读取。
 
 ## 10. 还可以做的
 
